@@ -26,12 +26,103 @@ PROGRESS_BLOCKED="false"
 TRAPPING_ENABLED="false"
 ETA_ENABLED="false"
 TRAP_SET="false"
+WINCH_TRAP_SET="false"
 
 CURRENT_NR_LINES=0
+CURRENT_NR_COLS=0
 PROGRESS_TITLE=""
 PROGRESS_TOTAL=100
 PROGRESS_START=0
 BLOCKED_START=0
+LAST_PERCENTAGE=0
+LAST_EXTRA=""
+
+# Handle window resize signal (SIGWINCH)
+handle_winch() {
+    resize_scroll_area
+}
+
+# Setup SIGWINCH trap for window resize handling
+setup_winch_trap() {
+    if [ "$WINCH_TRAP_SET" = "false" ]; then
+        trap handle_winch WINCH
+        WINCH_TRAP_SET="true"
+    fi
+}
+
+# Remove SIGWINCH trap
+remove_winch_trap() {
+    if [ "$WINCH_TRAP_SET" = "true" ]; then
+        trap - WINCH
+        WINCH_TRAP_SET="false"
+    fi
+}
+
+# Resize scroll area when window size changes (without side effects)
+resize_scroll_area() {
+    local new_lines=$(tput lines)
+    local new_cols=$(tput cols)
+
+    # Only resize if dimensions actually changed
+    if [ "$new_lines" -eq "$CURRENT_NR_LINES" ] && [ "$new_cols" -eq "$CURRENT_NR_COLS" ]; then
+        return
+    fi
+
+    CURRENT_NR_LINES=$new_lines
+    CURRENT_NR_COLS=$new_cols
+    local scroll_lines=$((new_lines-1))
+
+    # Save cursor position
+    echo -en "$CODE_SAVE_CURSOR"
+
+    # Reset scroll region to new size
+    echo -en "\033[0;${scroll_lines}r"
+
+    # Clear the last line (old progress bar position)
+    echo -en "\033[${new_lines};0f"
+    tput el
+
+    # Restore cursor position
+    echo -en "$CODE_RESTORE_CURSOR"
+    echo -en "$CODE_CURSOR_IN_SCROLL_AREA"
+
+    # Redraw progress bar at new position with saved state
+    redraw_progress_bar
+}
+
+# Redraw progress bar using saved state (for resize events)
+redraw_progress_bar() {
+    local lines=$(tput lines)
+
+    # Save cursor
+    echo -en "$CODE_SAVE_CURSOR"
+
+    # Move cursor to last row
+    echo -en "\033[${lines};0f"
+
+    # Clear line
+    tput el
+
+    # Calculate ETA if enabled
+    local eta=""
+    if [ "$ETA_ENABLED" = "true" ] && [ $LAST_PERCENTAGE -gt 0 ]; then
+        local running_time=$(($(date +%s)-PROGRESS_START))
+        local total_time=$((PROGRESS_TOTAL*running_time/$LAST_PERCENTAGE))
+        eta=$( format_eta $(($total_time-$running_time)) )
+    fi
+
+    # Calculate display percentage
+    local percentage=$LAST_PERCENTAGE
+    if [ $PROGRESS_TOTAL -ne 100 ] && [ $PROGRESS_TOTAL -ne 0 ]; then
+        percentage=$((LAST_PERCENTAGE*100/$PROGRESS_TOTAL))
+    fi
+
+    # Draw the bar
+    print_bar_text $percentage "$LAST_EXTRA" "$eta"
+
+    # Restore cursor
+    echo -en "$CODE_RESTORE_CURSOR"
+}
 
 # shellcheck disable=SC2120
 setup_scroll_area() {
@@ -39,6 +130,9 @@ setup_scroll_area() {
     if [ "$TRAPPING_ENABLED" = "true" ]; then
         trap_on_interrupt
     fi
+
+    # Setup SIGWINCH handler for window resize
+    setup_winch_trap
 
     # Handle first parameter: alternative progress bar title
     [ -n "$1" ] && PROGRESS_TITLE="$1" || PROGRESS_TITLE="Progress"
@@ -48,6 +142,7 @@ setup_scroll_area() {
 
     lines=$(tput lines)
     CURRENT_NR_LINES=$lines
+    CURRENT_NR_COLS=$(tput cols)
     lines=$((lines-1))
     # Scroll down a bit to avoid visual glitch when the screen area shrinks by one row
     echo -en "\n"
@@ -87,8 +182,13 @@ destroy_scroll_area() {
     # Scroll down a bit to avoid visual glitch when the screen area grows by one row
     echo -en "\n\n"
 
-    # Reset title for next usage
+    # Reset title and state for next usage
     PROGRESS_TITLE=""
+    LAST_PERCENTAGE=0
+    LAST_EXTRA=""
+
+    # Remove SIGWINCH trap
+    remove_winch_trap
 
     # Once the scroll area is cleared, we want to remove any trap previously set. Otherwise, ctrl+c will exit our shell
     if [ "$TRAP_SET" = "true" ]; then
@@ -108,6 +208,10 @@ format_eta() {
 }
 
 draw_progress_bar() {
+    # Save current state for resize events
+    LAST_PERCENTAGE=$1
+    LAST_EXTRA="$2"
+
     eta=""
     if [ "$ETA_ENABLED" = "true" -a $1 -gt 0 ]; then
         if [ "$PROGRESS_BLOCKED" = "true" ]; then
@@ -127,11 +231,21 @@ draw_progress_bar() {
     extra=$2
 
     lines=$(tput lines)
-    lines=$((lines))
+    cols=$(tput cols)
 
-    # Check if the window has been resized. If so, reset the scroll area
-    if [ "$lines" -ne "$CURRENT_NR_LINES" ]; then
-        setup_scroll_area
+    # Check if the window has been resized. If so, resize scroll area properly
+    if [ "$lines" -ne "$CURRENT_NR_LINES" ] || [ "$cols" -ne "$CURRENT_NR_COLS" ]; then
+        CURRENT_NR_LINES=$lines
+        CURRENT_NR_COLS=$cols
+        local scroll_lines=$((lines-1))
+
+        # Save cursor
+        echo -en "$CODE_SAVE_CURSOR"
+        # Reset scroll region to new size
+        echo -en "\033[0;${scroll_lines}r"
+        # Restore cursor
+        echo -en "$CODE_RESTORE_CURSOR"
+        echo -en "$CODE_CURSOR_IN_SCROLL_AREA"
     fi
 
     # Save cursor
