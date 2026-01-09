@@ -27,6 +27,8 @@ TRAPPING_ENABLED="false"
 ETA_ENABLED="false"
 TRAP_SET="false"
 WINCH_TRAP_SET="false"
+INPUT_DISABLED="false"
+SAVED_STTY=""
 
 CURRENT_NR_LINES=0
 CURRENT_NR_COLS=0
@@ -36,6 +38,26 @@ PROGRESS_START=0
 BLOCKED_START=0
 LAST_PERCENTAGE=0
 LAST_EXTRA=""
+
+# Disable terminal input (like vim/htop read-only mode)
+disable_input() {
+    if [ "$INPUT_DISABLED" = "false" ]; then
+        # Save current terminal settings
+        SAVED_STTY=$(stty -g)
+        # Disable echo and line buffering, ignore input
+        stty -echo -icanon
+        INPUT_DISABLED="true"
+    fi
+}
+
+# Restore terminal input
+restore_input() {
+    if [ "$INPUT_DISABLED" = "true" ]; then
+        # Restore saved terminal settings
+        stty "$SAVED_STTY"
+        INPUT_DISABLED="false"
+    fi
+}
 
 # Handle window resize signal (SIGWINCH)
 handle_winch() {
@@ -68,17 +90,30 @@ resize_scroll_area() {
         return
     fi
 
-    CURRENT_NR_LINES=$new_lines
-    CURRENT_NR_COLS=$new_cols
-    local scroll_lines=$((new_lines-1))
+    local old_lines=$CURRENT_NR_LINES
 
     # Save cursor position
     echo -en "$CODE_SAVE_CURSOR"
 
-    # Reset scroll region to new size
+    # First, temporarily remove scroll region restriction to allow clearing anywhere
+    echo -en "\033[0;${new_lines}r"
+
+    # Clear the OLD progress bar position if it's within the new terminal bounds
+    # (when window shrinks, old position might be outside current bounds)
+    if [ "$old_lines" -gt 0 ] && [ "$old_lines" -le "$new_lines" ]; then
+        echo -en "\033[${old_lines};0f"
+        tput el
+    fi
+
+    # Update dimensions
+    CURRENT_NR_LINES=$new_lines
+    CURRENT_NR_COLS=$new_cols
+    local scroll_lines=$((new_lines-1))
+
+    # Set up the proper scroll region (excluding last line for progress bar)
     echo -en "\033[0;${scroll_lines}r"
 
-    # Clear the last line (old progress bar position)
+    # Clear the new last line
     echo -en "\033[${new_lines};0f"
     tput el
 
@@ -133,6 +168,9 @@ setup_scroll_area() {
 
     # Setup SIGWINCH handler for window resize
     setup_winch_trap
+
+    # Disable terminal input to prevent user input from disrupting display
+    disable_input
 
     # Handle first parameter: alternative progress bar title
     [ -n "$1" ] && PROGRESS_TITLE="$1" || PROGRESS_TITLE="Progress"
@@ -189,6 +227,9 @@ destroy_scroll_area() {
 
     # Remove SIGWINCH trap
     remove_winch_trap
+
+    # Restore terminal input
+    restore_input
 
     # Once the scroll area is cleared, we want to remove any trap previously set. Otherwise, ctrl+c will exit our shell
     if [ "$TRAP_SET" = "true" ]; then
