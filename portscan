@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# Check if the user has provided an IP address
+if [[ -z $1 ]]; then
+    echo "Usage: ./portscan.sh <ip_address>"
+    exit 1
+fi
+
+# Source the bash progressbar script.
+source $HOME/tools/portscan/pellow_bash_progressbar/progress_bar.sh
+
+# Define the IP address
+IP_ADDR=$1
+
+# Define the ports to scan
+MAX_PORT=65536
+STEP=512
+
+# Enable the progress bar.
+enable_trapping
+ETA_ENABLED="true"
+# Create progress bar
+setup_scroll_area "Processing..." $(($MAX_PORT-1))
+# Perform the port scan
+for p in $(seq 1 $STEP $MAX_PORT); do
+    e=$(($p + $STEP - 1))
+    e=$(($e > $MAX_PORT-1 ? $MAX_PORT-1 : $e))
+
+    draw_progress_bar $p "$( date "+%r" )| $p on $MAX_PORT"
+    sudo nmap -p $p-$e $IP_ADDR 2>/dev/null | grep open
+done
+destroy_scroll_area
