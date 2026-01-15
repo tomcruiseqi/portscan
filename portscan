@@ -7,7 +7,8 @@ if [[ -z $1 ]]; then
 fi
 
 # Source the bash progressbar script.
-source $HOME/tools/portscan/pellow_bash_progressbar/progress_bar.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/pellow_bash_progressbar/progress_bar.sh"
 
 # Define the IP address
 IP_ADDR=$1
